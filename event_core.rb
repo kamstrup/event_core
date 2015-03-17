@@ -11,18 +11,33 @@ module EventCore
     def initialize
       @triggers = []
       @closed = false
+      @ready = false
+      @timeout_secs = nil
     end
 
     def ready?
-      false
+      @ready
+    end
+
+    def ready!(event_data=nil)
+      @ready = true
+      @event_data = event_data
+    end
+
+    def timeout
+      @timeout_secs
     end
 
     def select_io()
       nil
     end
 
-    def read_io()
-      nil
+    def consume_event_data!
+      raise "Source not ready" unless ready?
+      data = @event_data
+      @event_data = nil
+      @ready = false
+      data
     end
 
     def event_factory(event_data)
@@ -42,7 +57,7 @@ module EventCore
     end
 
     def notify_triggers()
-      event_data = read_io()
+      event_data = consume_event_data!()
       event = event_factory(event_data)
       @triggers.delete_if do |trigger|
         trigger.call(event)
@@ -66,7 +81,7 @@ module EventCore
       @rio
     end
 
-    def read_io
+    def consume_event_data!
       @rio.read_nonblock(@buffer_size)
     end
 
@@ -102,6 +117,23 @@ module EventCore
 
   end
 
+  class TimeoutSource < Source
+    def initialize(secs)
+      super()
+      @timeout_secs = secs
+      @next_timestamp = Time.now.to_f + secs
+    end
+
+    def ready?
+      now = Time.now.to_f
+      if now >= @next_timestamp
+        ready!
+        @next_timestamp = now + @timeout_secs
+      end
+      false
+    end
+  end
+
   class EventLoop
 
     def initialize
@@ -128,6 +160,7 @@ module EventCore
         # Collect sources
         ready_sources = []
         select_sources_by_ios = {}
+        timeouts = []
 
         @sources.delete_if do |source|
           if source.closed?
@@ -139,18 +172,25 @@ module EventCore
               select_sources_by_ios[source.select_io] = source
             end
 
+            timeouts << source.timeout unless source.timeout.nil?
+
             false
           end
         end
 
         unless select_sources_by_ios.empty?
           puts "Selecting: #{select_sources_by_ios}"
-          read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [])
+          # Note: timeouts.min is nil if there are no timeouts, causing infinite blocking as intended
+          read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
 
-          read_ios.each { |io|
-            puts "READY: #{io}"
-            ready_sources << select_sources_by_ios[io]
-          }
+          if read_ios.nil?
+            # timed out
+          else
+            read_ios.each { |io|
+              puts "READY: #{io}"
+              ready_sources << select_sources_by_ios[io]
+            }
+          end
         end
 
         # Dispatch all sources marked ready
@@ -170,5 +210,13 @@ signals.add_trigger { |event|
   loop.quit if event.first == 2
 }
 loop.add_source(signals)
+
+timeout = EventCore::TimeoutSource.new(2.0)
+timeout.add_trigger { |event| puts "Time: #{Time.now.sec}"}
+loop.add_source(timeout)
+
+timeout2 = EventCore::TimeoutSource.new(0.5)
+timeout2.add_trigger {|event| puts "."}
+loop.add_source(timeout2)
 
 loop.run
