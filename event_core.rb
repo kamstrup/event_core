@@ -2,10 +2,8 @@ require 'fcntl'
 require 'monitor'
 
 # TODO:
-# - ThreadSource (source updated safely from another thread)
-# - Removal of sources
-# - Convenience functions add_timeout, add_idle
-# - Single trigger per source
+# - ThreadSource (source updated safely from another thread - fx. blocking resque poll)
+# - API for removal of sources
 # - use quit pipe for control messages, like awakening from select() when new sources are added
 # - map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
 # - don't hold lock during select
@@ -19,10 +17,10 @@ module EventCore
   class Source
 
     def initialize
-      @triggers = []
       @closed = false
       @ready = false
       @timeout_secs = nil
+      @trigger = nil
     end
 
     def ready?
@@ -60,24 +58,21 @@ module EventCore
 
     def close!
       @closed = true
-      @triggers = []
+      @trigger = nil
     end
 
-    # Add a trigger callback block to call each time an event is ready.
-    # If the source has an event instance it will be passed to the block.
-    # If the block returns with 'next true' it will be removed from the source.
-    def add_trigger(&block)
-      @triggers << block
+    def trigger(&block)
+      @trigger = block
     end
 
     # Consume pending event data and fire all triggers.
     # Returns true if one or more triggers where removed
     # due to returning true
-    def notify_triggers
+    def notify_trigger
       event_data = consume_event_data!
       event = event_factory(event_data)
-      @triggers.delete_if do |trigger|
-        trigger.call(event)
+      if @trigger && @trigger.call(event)
+        close!
       end
     end
   end
@@ -85,8 +80,6 @@ module EventCore
   # Idle sources are triggered on each iteration of the event loop.
   # If any one of the triggers returns true the whole source will close
   class IdleSource < Source
-
-    alias :super_notify_triggers :notify_triggers
 
     def initialize(event_data=nil)
       super()
@@ -104,12 +97,6 @@ module EventCore
 
     def consume_event_data!
       @event_data
-    end
-
-    def notify_triggers
-      num_triggers = @triggers.length
-      super_notify_triggers
-      close! if num_triggers != @triggers.length
     end
 
   end
@@ -198,7 +185,7 @@ module EventCore
       # Otherwise the state of the loop will be undefiend
       @do_quit = false
       @quit_source = PipeSource.new
-      @quit_source.add_trigger {|event| @do_quit = true }
+      @quit_source.trigger {|event| @do_quit = true }
       @sources << @quit_source
 
       # We use a monitor, not a mutex, becuase Ruby mutexes are not reentrant,
@@ -220,7 +207,7 @@ module EventCore
     # another thread add_once() is even more convenient.
     def add_idle(&block)
       source = IdleSource.new
-      source.add_trigger { next true if block.call  }
+      source.trigger { next true if block.call  }
       add_source(source)
     end
 
@@ -228,13 +215,13 @@ module EventCore
     # no matter how it returns.
     def add_once(&block)
       source = IdleSource.new
-      source.add_trigger { block.call; next true  }
+      source.trigger { block.call; next true  }
       add_source(source)
     end
 
     def add_timeout(secs, &block)
       source = TimeoutSource.new(secs)
-      source.add_trigger { next true if block.call }
+      source.trigger { next true if block.call }
       add_source(source)
     end
 
@@ -287,7 +274,7 @@ module EventCore
 
       # Dispatch all sources marked ready
       ready_sources.each { |source|
-        source.notify_triggers
+        source.notify_trigger
       }
 
       # Note1: select_sources_by_ios is never empty - we always have the quit source in there.
@@ -298,7 +285,7 @@ module EventCore
       # On timeout read_ios will be nil
       unless read_ios.nil?
         read_ios.each { |io|
-          select_sources_by_ios[io].notify_triggers
+          select_sources_by_ios[io].notify_trigger
         }
       end
 
@@ -309,25 +296,23 @@ end
 
 loop = EventCore::EventLoop.new
 signals = EventCore::UnixSignalSource.new(1, 2)
-signals.add_trigger { |event|
+signals.trigger { |event|
   puts "EVENT: #{event}"
   loop.quit if event.first == 2
 }
 loop.add_source(signals)
 
-timeout = EventCore::TimeoutSource.new(2.0)
-timeout.add_trigger { |event| puts "Time: #{Time.now.sec}"}
-loop.add_source(timeout)
+loop.add_timeout(0.3) { |event| puts "Time: #{Time.now.sec}"}
 
 i = 0
-timeout2 = EventCore::TimeoutSource.new(0.24)
-timeout2.add_trigger {|event|
-  puts "-- #{Time.now.sec}"
+loop.add_timeout(0.1) {|event|
   i += 1
-  loop.add_once { puts "SEND QUIT"; loop.quit }
-  next true if i == 10
+  puts "-- #{Time.now.sec}s i=#{i}"
+  if i == 10
+    loop.add_once { puts "SEND QUIT"; loop.quit }
+    next true
+  end
 }
-loop.add_source(timeout2)
 
 loop.add_once { puts "ONCE" }
 
