@@ -3,16 +3,12 @@ require 'monitor'
 require 'thread'
 
 # TODO:
-# - ThreadSource (source updated safely from another thread - fx. blocking resque poll)
-# - API for removal of sources
 # - map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
 
 module EventCore
 
-  class Event
-
-  end
-
+  # Low level event source representation.
+  # Only needed when the convenience APIs on EventLoop are not enough.
   class Source
 
     def initialize
@@ -22,23 +18,30 @@ module EventCore
       @trigger = nil
     end
 
+    # Check if a source is ready. Called on each main loop iteration.
+    # May have side effects, but should not leave ready state until
+    # consume_event_data!() has been called.
     def ready?
       @ready
     end
 
+    # Mark source as ready
     def ready!(event_data=nil)
       @ready = true
       @event_data = event_data
     end
 
+    # Timeout in seconds, or nil
     def timeout
       @timeout_secs
     end
 
+    # An optional IO object to select on
     def select_io()
       nil
     end
 
+    # Consume pending event data and set readiness to false
     def consume_event_data!
       raise "Source not ready: #{self}" unless ready?
       data = @event_data
@@ -47,19 +50,23 @@ module EventCore
       data
     end
 
+    # Raw event data is passed to this function before passed to the trigger
     def event_factory(event_data)
       event_data
     end
 
+    # Check to see if close!() has been called.
     def closed?
       @closed
     end
 
+    # Close this source, marking it for removal from the main loop.
     def close!
       @closed = true
-      @trigger = nil
+      @trigger = nil # Help the GC, if the closure holds onto some data
     end
 
+    # Set the trigger function to call on events to the given block
     def trigger(&block)
       @trigger = block
     end
@@ -77,7 +84,6 @@ module EventCore
   end
 
   # Idle sources are triggered on each iteration of the event loop.
-  # If any one of the triggers returns true the whole source will close
   class IdleSource < Source
 
     def initialize(event_data=nil)
@@ -100,6 +106,8 @@ module EventCore
 
   end
 
+  # A source that triggers when data is ready to be read from an internal pipe.
+  # Send data to the pipe with the (blocking) write() method.
   class PipeSource < Source
 
     alias :super_close! :close!
@@ -136,8 +144,16 @@ module EventCore
 
   end
 
+  # A source that mashals Unix signals to be handled in the main loop.
+  # This detaches you from the dreaded Ruby "trap context", and allows
+  # you to do what you like in the signal handler.
+  #
+  # The trigger is called with an array of signal numbers as argument.
+  # There can be more than one signal number if more than one signal fired
+  # since the source was last checked.
   class UnixSignalSource < PipeSource
 
+    # Give it a list of signals, names or integers to listen for.
     def initialize(*signals)
       super()
       @signals = signals.map { |sig| sig.is_a?(Integer) ? Signal.signame(sig) : sig.to_s}
@@ -155,6 +171,7 @@ module EventCore
 
   end
 
+  # A source that fires the trigger depending on a timeout.
   class TimeoutSource < Source
     def initialize(secs)
       super()
@@ -175,6 +192,7 @@ module EventCore
     end
   end
 
+  # Core data structure for handling and polling Sources.
   class EventLoop
 
     def initialize
@@ -200,17 +218,20 @@ module EventCore
 
     # Add an event source to check in the loop. You can do this from any thread,
     # or from trigger callbacks, or whenever you please.
+    # Returns the source, so you can close!() it when no longer needed.
     def add_source(source)
       @monitor.synchronize {
         @sources << source
         send_wakeup if @selecting
       }
+      source
     end
 
     # Add an idle callback to the loop. Will be removed like any other
     # if it returns with 'next true'.
     # For one-off dispatches into the main loop, fx. for callbacks from
     # another thread add_once() is even more convenient.
+    # Returns the source, so you can close!() it when no longer needed.
     def add_idle(&block)
       source = IdleSource.new
       source.trigger { next true if block.call  }
@@ -219,24 +240,32 @@ module EventCore
 
     # Add an idle callback that is removed after its first invocation,
     # no matter how it returns.
+    # Returns the source, for API consistency, but it is not really useful,
+    # as it will be auto-closed on next mainloop iteration.
     def add_once(&block)
       source = IdleSource.new
       source.trigger { block.call; next true  }
       add_source(source)
     end
 
+    # Add a timeout function to be called periodically, or until it returns with 'next true'.
+    # The timeout is in seconds and the first call is fired after it has elapsed.
+    # Returns the source, so you can close!() it when no longer needed.
     def add_timeout(secs, &block)
       source = TimeoutSource.new(secs)
       source.trigger { next true if block.call }
       add_source(source)
     end
 
+    # Safe and clean shutdown of the loop.
+    # Note that the loop will only shut down on next iteration, not immediately.
     def quit
       # Does not require locking. If any data comes through in what ever form,
       # we quit the loop
       send_control('q')
     end
 
+    # Start the loop, and do not return before some calls quit().
     def run
       loop do
         step
@@ -246,6 +275,7 @@ module EventCore
       @control_source.close!
     end
 
+    # Expert: Run a single iteration of the main loop.
     def step
       # Collect sources
       ready_sources = []
