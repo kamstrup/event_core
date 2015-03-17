@@ -5,6 +5,9 @@ require 'monitor'
 # - ThreadSource (source updated safely from another thread)
 # - Removal of sources
 # - Convenience functions add_timeout, add_idle
+# - Single trigger per source
+# - use quit pipe for control messages, like awakening from select() when new sources are added
+# map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
 
 module EventCore
 
@@ -66,13 +69,48 @@ module EventCore
       @triggers << block
     end
 
-    def notify_triggers()
+    # Consume pending event data and fire all triggers.
+    # Returns true if one or more triggers where removed
+    # due to returning true
+    def notify_triggers
       event_data = consume_event_data!
       event = event_factory(event_data)
       @triggers.delete_if do |trigger|
         trigger.call(event)
       end
     end
+  end
+
+  # Idle sources are triggered on each iteration of the event loop.
+  # If any one of the triggers returns true the whole source will close
+  class IdleSource < Source
+
+    alias :super_notify_triggers :notify_triggers
+
+    def initialize(event_data=nil)
+      super()
+      @ready = true
+      @event_data
+    end
+
+    def ready?
+      true
+    end
+
+    def timeout
+      0
+    end
+
+    def consume_event_data!
+      @event_data
+    end
+
+    def notify_triggers
+      num_triggers = @triggers.length
+      super_notify_triggers
+      close! if num_triggers != @triggers.length
+    end
+
   end
 
   class PipeSource < Source
@@ -171,6 +209,30 @@ module EventCore
       }
     end
 
+    # Add an idle callback to the loop. Will be removed like any other
+    # if it returns with 'next true'.
+    # For one-off dispatches into the main loop, fx. for callbacks from
+    # another thread add_once() is even more convenient.
+    def add_idle(&block)
+      source = IdleSource.new
+      source.add_trigger { next true if block.call  }
+      add_source(source)
+    end
+
+    # Add an idle callback that is removed after its first invocation,
+    # no matter how it returns.
+    def add_once(&block)
+      source = IdleSource.new
+      source.add_trigger { block.call; next true  }
+      add_source(source)
+    end
+
+    def add_timeout(secs, &block)
+      source = TimeoutSource.new(secs)
+      source.add_trigger { next true if block.call }
+      add_source(source)
+    end
+
     def quit
       # Does not require locking. If any data comes through in what ever form,
       # we quit the loop
@@ -201,6 +263,7 @@ module EventCore
 
       @sources.delete_if do |source|
         if source.closed?
+          puts "DEL #{source}"
           true
         else
           ready_sources << source if source.ready?
@@ -254,9 +317,12 @@ timeout2 = EventCore::TimeoutSource.new(0.24)
 timeout2.add_trigger {|event|
   puts "-- #{Time.now.sec}"
   i += 1
+  loop.add_once { puts "SEND QUIT"; loop.quit }
   next true if i == 10
 }
 loop.add_source(timeout2)
+
+loop.add_once { puts "ONCE" }
 
 loop.run
 puts "Loop exited gracefully"
