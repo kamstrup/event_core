@@ -1,12 +1,11 @@
 require 'fcntl'
 require 'monitor'
+require 'thread'
 
 # TODO:
 # - ThreadSource (source updated safely from another thread - fx. blocking resque poll)
 # - API for removal of sources
-# - use quit pipe for control messages, like awakening from select() when new sources are added
 # - map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
-# - don't hold lock during select
 
 module EventCore
 
@@ -184,13 +183,19 @@ module EventCore
       # Only ever set @do_quit through the quit() method!
       # Otherwise the state of the loop will be undefiend
       @do_quit = false
-      @quit_source = PipeSource.new
-      @quit_source.trigger {|event| @do_quit = true }
-      @sources << @quit_source
+      @control_source = PipeSource.new
+      @control_source.trigger { |event|
+        # We can get multiple control messages in one event,
+        # so generally it is a "string of control chars", hence the include? and not ==
+        @do_quit = true if event.include?('q')
+      }
+      @sources << @control_source
 
       # We use a monitor, not a mutex, becuase Ruby mutexes are not reentrant,
       # and we need reentrancy to be able to add sources from within trigger callbacks
       @monitor = Monitor.new
+
+      @selecting = false
     end
 
     # Add an event source to check in the loop. You can do this from any thread,
@@ -198,6 +203,7 @@ module EventCore
     def add_source(source)
       @monitor.synchronize {
         @sources << source
+        send_wakeup if @selecting
       }
     end
 
@@ -228,7 +234,7 @@ module EventCore
     def quit
       # Does not require locking. If any data comes through in what ever form,
       # we quit the loop
-      @quit_source.write('q')
+      send_control('q')
     end
 
     def run
@@ -237,58 +243,70 @@ module EventCore
         break if @do_quit
       end
 
-      @quit_source.close!
+      @control_source.close!
     end
 
     def step
-      @monitor.synchronize {
-        _step
-      }
-    end
-
-    private
-    def _step
-      # This function assumes it's holding the lock on @monitor
-
       # Collect sources
       ready_sources = []
       select_sources_by_ios = {}
       timeouts = []
 
-      @sources.delete_if do |source|
-        if source.closed?
-          puts "DEL #{source}"
-          true
-        else
-          ready_sources << source if source.ready?
+      @monitor.synchronize {
+        @sources.delete_if do |source|
+          if source.closed?
+            puts "DEL #{source}"
+            true
+          else
+            ready_sources << source if source.ready?
 
-          unless source.select_io.nil?
-            select_sources_by_ios[source.select_io] = source
+            unless source.select_io.nil?
+              select_sources_by_ios[source.select_io] = source
+            end
+
+            timeouts << source.timeout unless source.timeout.nil?
+
+            false
           end
-
-          timeouts << source.timeout unless source.timeout.nil?
-
-          false
         end
-      end
 
-      # Dispatch all sources marked ready
-      ready_sources.each { |source|
-        source.notify_trigger
+        # Dispatch all sources marked ready
+        ready_sources.each { |source|
+          source.notify_trigger
+        }
+
+        # Note1: select_sources_by_ios is never empty - we always have the quit source in there.
+        #        We need that assumption to ensure timeouts work
+        # Note2: timeouts.min is nil if there are no timeouts, causing infinite blocking - as intended
+        @selecting = true
       }
 
-      # Note1: select_sources_by_ios is never empty - we always have the quit source in there.
-      #        We need that assumption to ensure timeouts work
-      # Note2: timeouts.min is nil if there are no timeouts, causing infinite blocking - as intended
+      # Release lock while we're selecting so users can add sources. add_source() will see
+      # that we are stuck in a select() and do send_wakeup().
+      # Note: Only select() without locking, everything else must be locked!
       read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
 
-      # On timeout read_ios will be nil
-      unless read_ios.nil?
-        read_ios.each { |io|
-          select_sources_by_ios[io].notify_trigger
-        }
-      end
+      @monitor.synchronize {
+        @selecting = false
 
+        # On timeout read_ios will be nil
+        unless read_ios.nil?
+          read_ios.each { |io|
+            select_sources_by_ios[io].notify_trigger
+          }
+        end
+      }
+    end
+
+    private
+    def send_control(char)
+      raise "Illegal control character '#{char}'" unless ['.', 'q'].include?(char)
+      @control_source.write(char)
+    end
+
+    private
+    def send_wakeup
+      send_control('.')
     end
   end
 
@@ -302,10 +320,10 @@ signals.trigger { |event|
 }
 loop.add_source(signals)
 
-loop.add_timeout(0.3) { |event| puts "Time: #{Time.now.sec}"}
+loop.add_timeout(3) { |event| puts "Time: #{Time.now.sec}"}
 
 i = 0
-loop.add_timeout(0.1) {|event|
+loop.add_timeout(1) {|event|
   i += 1
   puts "-- #{Time.now.sec}s i=#{i}"
   if i == 10
@@ -316,5 +334,14 @@ loop.add_timeout(0.1) {|event|
 
 loop.add_once { puts "ONCE" }
 
+thr = Thread.new {
+  sleep 4
+  puts "Thread here"
+  loop.add_once { puts "WEEEE"; loop.quit }
+  puts "Thread done"
+}
+
 loop.run
 puts "Loop exited gracefully"
+
+thr.join
