@@ -7,7 +7,8 @@ require 'monitor'
 # - Convenience functions add_timeout, add_idle
 # - Single trigger per source
 # - use quit pipe for control messages, like awakening from select() when new sources are added
-# map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
+# - map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
+# - don't hold lock during select
 
 module EventCore
 
@@ -115,7 +116,7 @@ module EventCore
 
   class PipeSource < Source
 
-    attr_reader :rio, :wio
+    alias :super_close! :close!
 
     def initialize
       super()
@@ -138,9 +139,13 @@ module EventCore
     end
 
     def close!
-      super.close
+      super_close!
       @rio.close unless @rio.closed?
       @wio.close unless @wio.closed?
+    end
+
+    def write(buf)
+      @wio.write(buf)
     end
 
   end
@@ -153,7 +158,7 @@ module EventCore
       @signals.each do |sig_name|
         Signal.trap(sig_name) do |signo|
           puts "TRAP SIG #{signo}"
-          @wio.write("#{signo}\n")
+          write("#{signo}\n")
         end
       end
     end
@@ -236,7 +241,7 @@ module EventCore
     def quit
       # Does not require locking. If any data comes through in what ever form,
       # we quit the loop
-      @quit_source.wio.write('q')
+      @quit_source.write('q')
     end
 
     def run
@@ -244,6 +249,8 @@ module EventCore
         step
         break if @do_quit
       end
+
+      @quit_source.close!
     end
 
     def step
