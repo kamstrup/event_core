@@ -139,8 +139,9 @@ module EventCore
     def initialize
       @sources = []
 
+      @do_quit = false
       @quit_source = PipeSource.new
-      @quit_source.add_trigger {|event| raise "Loop Quit: #{event}"}
+      @quit_source.add_trigger {|event| @do_quit = true }
       @sources << @quit_source
     end
 
@@ -153,51 +154,55 @@ module EventCore
     end
 
     def run
-
-      while true
-        puts "Loop"
-
-        # Collect sources
-        ready_sources = []
-        select_sources_by_ios = {}
-        timeouts = []
-
-        @sources.delete_if do |source|
-          if source.closed?
-            true
-          else
-            ready_sources << source if source.ready?
-
-            unless source.select_io.nil?
-              select_sources_by_ios[source.select_io] = source
-            end
-
-            timeouts << source.timeout unless source.timeout.nil?
-
-            false
-          end
-        end
-
-        unless select_sources_by_ios.empty?
-          puts "Selecting: #{select_sources_by_ios}"
-          # Note: timeouts.min is nil if there are no timeouts, causing infinite blocking as intended
-          read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
-
-          if read_ios.nil?
-            # timed out
-          else
-            read_ios.each { |io|
-              puts "READY: #{io}"
-              ready_sources << select_sources_by_ios[io]
-            }
-          end
-        end
-
-        # Dispatch all sources marked ready
-        ready_sources.each { |source|
-          source.notify_triggers
-        }
+      loop do
+        step
+        break if @do_quit
       end
+    end
+
+    def step
+      puts "Step"
+
+      # Collect sources
+      ready_sources = []
+      select_sources_by_ios = {}
+      timeouts = []
+
+      @sources.delete_if do |source|
+        if source.closed?
+          true
+        else
+          ready_sources << source if source.ready?
+
+          unless source.select_io.nil?
+            select_sources_by_ios[source.select_io] = source
+          end
+
+          timeouts << source.timeout unless source.timeout.nil?
+
+          false
+        end
+      end
+
+      unless select_sources_by_ios.empty?
+        puts "Selecting: #{select_sources_by_ios}"
+        # Note: timeouts.min is nil if there are no timeouts, causing infinite blocking as intended
+        read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
+
+        if read_ios.nil?
+          # timed out
+        else
+          read_ios.each { |io|
+            puts "READY: #{io}"
+            ready_sources << select_sources_by_ios[io]
+          }
+        end
+      end
+
+      # Dispatch all sources marked ready
+      ready_sources.each { |source|
+        source.notify_triggers
+      }
     end
   end
 
