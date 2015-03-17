@@ -1,4 +1,10 @@
 require 'fcntl'
+require 'monitor'
+
+# TODO:
+# - ThreadSource (source updated safely from another thread)
+# - Removal of sources
+# - Convenience functions add_timeout, add_idle
 
 module EventCore
 
@@ -50,8 +56,12 @@ module EventCore
 
     def close!
       @closed = true
+      @triggers = []
     end
 
+    # Add a trigger callback block to call each time an event is ready.
+    # If the source has an event instance it will be passed to the block.
+    # If the block returns with 'next true' it will be removed from the source.
     def add_trigger(&block)
       @triggers << block
     end
@@ -141,17 +151,29 @@ module EventCore
     def initialize
       @sources = []
 
+      # Only ever set @do_quit through the quit() method!
+      # Otherwise the state of the loop will be undefiend
       @do_quit = false
       @quit_source = PipeSource.new
       @quit_source.add_trigger {|event| @do_quit = true }
       @sources << @quit_source
+
+      # We use a monitor, not a mutex, becuase Ruby mutexes are not reentrant,
+      # and we need reentrancy to be able to add sources from within trigger callbacks
+      @monitor = Monitor.new
     end
 
+    # Add an event source to check in the loop. You can do this from any thread,
+    # or from trigger callbacks, or whenever you please.
     def add_source(source)
-      @sources << source
+      @monitor.synchronize {
+        @sources << source
+      }
     end
 
     def quit
+      # Does not require locking. If any data comes through in what ever form,
+      # we quit the loop
       @quit_source.wio.write('q')
     end
 
@@ -163,7 +185,14 @@ module EventCore
     end
 
     def step
-      puts "Step"
+      @monitor.synchronize {
+        _step
+      }
+    end
+
+    private
+    def _step
+      # This function assumes it's holding the lock on @monitor
 
       # Collect sources
       ready_sources = []
@@ -191,16 +220,16 @@ module EventCore
         source.notify_triggers
       }
 
-      unless select_sources_by_ios.empty?
-        # Note: timeouts.min is nil if there are no timeouts, causing infinite blocking as intended
-        read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
+      # Note1: select_sources_by_ios is never empty - we always have the quit source in there.
+      #        We need that assumption to ensure timeouts work
+      # Note2: timeouts.min is nil if there are no timeouts, causing infinite blocking - as intended
+      read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
 
-        # On timeout read_ios will be nil
-        unless read_ios.nil?
-          read_ios.each { |io|
-            select_sources_by_ios[io].notify_triggers
-          }
-        end
+      # On timeout read_ios will be nil
+      unless read_ios.nil?
+        read_ios.each { |io|
+          select_sources_by_ios[io].notify_triggers
+        }
       end
 
     end
@@ -220,8 +249,14 @@ timeout = EventCore::TimeoutSource.new(2.0)
 timeout.add_trigger { |event| puts "Time: #{Time.now.sec}"}
 loop.add_source(timeout)
 
+i = 0
 timeout2 = EventCore::TimeoutSource.new(0.24)
-timeout2.add_trigger {|event| puts "-- #{Time.now.sec}"}
+timeout2.add_trigger {|event|
+  puts "-- #{Time.now.sec}"
+  i += 1
+  next true if i == 10
+}
 loop.add_source(timeout2)
 
 loop.run
+puts "Loop exited gracefully"
