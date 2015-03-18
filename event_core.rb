@@ -3,7 +3,9 @@ require 'monitor'
 require 'thread'
 
 # TODO:
-# - map signo to static strings (with newlines) so we don't build strings in UnixSignalHandler
+# - IOSource
+# - Child process reaper
+# - 'next false' to close source
 
 module EventCore
 
@@ -150,22 +152,28 @@ module EventCore
   #
   # The trigger is called with an array of signal numbers as argument.
   # There can be more than one signal number if more than one signal fired
-  # since the source was last checked.
+  # since the source was last checked. Signal names can be recovered with
+  # Signal.signame().
   class UnixSignalSource < PipeSource
 
-    # Give it a list of signals, names or integers to listen for.
+    # We need to allocate the signal messages we send over the pipe up front,
+    # to avoid allocating memory (building strings) inside the signal trap context.
+    # A signal message is just its integer value as a string trailed by a newline.
+    SIGNAL_MESSAGES_BY_SIGNO = Hash[Signal.list.map {|k,v| [v, "#{v}\n"]}]
+
+    # Give it a list of signals, names or integers, to listen for.
     def initialize(*signals)
       super()
       @signals = signals.map { |sig| sig.is_a?(Integer) ? Signal.signame(sig) : sig.to_s}
       @signals.each do |sig_name|
         Signal.trap(sig_name) do |signo|
-          puts "TRAP SIG #{signo}"
-          write("#{signo}\n")
+          write(SIGNAL_MESSAGES_BY_SIGNO[signo])
         end
       end
     end
 
     def event_factory(event_data)
+      # We may have received more than one signal since last check
       event_data.split('\n').map { |datum| datum.to_i }
     end
 
@@ -257,6 +265,17 @@ module EventCore
       add_source(source)
     end
 
+    # Add a unix signal handler that is dispatched in the main loop.
+    # The handler will receive an array of signal numbers that was triggered
+    # since last step in the loop. You can provide one or more signals
+    # to listen for, given as integers or names.
+    # Returns the source, so you can close!() it when no longer needed.
+    def add_unix_signal(*signals, &block)
+      source = UnixSignalSource.new(*signals)
+      source.trigger { |signals|  next true if block.call(signals) }
+      add_source(source)
+    end
+
     # Safe and clean shutdown of the loop.
     # Note that the loop will only shut down on next iteration, not immediately.
     def quit
@@ -343,20 +362,24 @@ module EventCore
 end
 
 loop = EventCore::EventLoop.new
-signals = EventCore::UnixSignalSource.new(1, 2)
-signals.trigger { |event|
-  puts "EVENT: #{event}"
-  loop.quit if event.first == 2
-}
-loop.add_source(signals)
 
-loop.add_timeout(3) { |event| puts "Time: #{Time.now.sec}"}
+loop.add_unix_signal(1) { |signo|
+  puts "SIG1: #{signo}"
+}
+
+loop.add_unix_signal(2) { |signo|
+  puts "SIG2: #{signo}"
+  puts "Quitting loop"
+  loop.quit
+}
+
+loop.add_timeout(3) { puts "Time: #{Time.now.sec}" }
 
 i = 0
-loop.add_timeout(1) {|event|
+loop.add_timeout(1) {
   i += 1
   puts "-- #{Time.now.sec}s i=#{i}"
-  if i == 10
+  if i == 50
     loop.add_once { puts "SEND QUIT"; loop.quit }
     next true
   end
@@ -367,7 +390,7 @@ loop.add_once { puts "ONCE" }
 thr = Thread.new {
   sleep 4
   puts "Thread here"
-  loop.add_once { puts "WEEEE"; loop.quit }
+  loop.add_once { puts "WEEEE, idle callback in main loop, send from thread" }
   puts "Thread done"
 }
 
