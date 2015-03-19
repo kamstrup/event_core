@@ -75,7 +75,7 @@ puts 'All done'
 
 Concepts and Architecture
 -------------------------
-TODO
+TODO, mainloop, sources, triggers, idles, timeouts, select io
 
 Caveats & Known Bugs
 --------------------
