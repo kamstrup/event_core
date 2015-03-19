@@ -361,40 +361,42 @@ module EventCore
 
 end
 
-loop = EventCore::EventLoop.new
+if __FILE__ == $0
+  loop = EventCore::EventLoop.new
 
-loop.add_unix_signal(1) { |signo|
-  puts "SIG1: #{signo}"
-}
+  loop.add_unix_signal(1) { |signo|
+    puts "SIG1: #{signo}"
+  }
 
-loop.add_unix_signal(2) { |signo|
-  puts "SIG2: #{signo}"
-  puts "Quitting loop"
-  loop.quit
-}
+  loop.add_unix_signal(2) { |signo|
+    puts "SIG2: #{signo}"
+    puts "Quitting loop"
+    loop.quit
+  }
 
-loop.add_timeout(3) { puts "Time: #{Time.now.sec}" }
+  loop.add_timeout(3) { puts "Time: #{Time.now.sec}" }
 
-i = 0
-loop.add_timeout(1) {
-  i += 1
-  puts "-- #{Time.now.sec}s i=#{i}"
-  if i == 50
-    loop.add_once { puts "SEND QUIT"; loop.quit }
-    next true
-  end
-}
+  i = 0
+  loop.add_timeout(1) {
+    i += 1
+    puts "-- #{Time.now.sec}s i=#{i}"
+    if i == 50
+      loop.add_once { puts "SEND QUIT"; loop.quit }
+      next true
+    end
+  }
 
-loop.add_once { puts "ONCE" }
+  loop.add_once { puts "ONCE" }
 
-thr = Thread.new {
-  sleep 4
-  puts "Thread here"
-  loop.add_once { puts "WEEEE, idle callback in main loop, send from thread" }
-  puts "Thread done"
-}
+  thr = Thread.new {
+    sleep 4
+    puts "Thread here"
+    loop.add_once { puts "WEEEE, idle callback in main loop, send from thread" }
+    puts "Thread done"
+  }
 
-loop.run
-puts "Loop exited gracefully"
+  loop.run
+  puts "Loop exited gracefully"
 
-thr.join
+  thr.join
+end
