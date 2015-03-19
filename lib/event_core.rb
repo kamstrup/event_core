@@ -5,7 +5,6 @@ require 'thread'
 # TODO:
 # - IOSource
 # - Child process reaper
-# - 'next false' to close source
 
 module EventCore
 
@@ -73,14 +72,14 @@ module EventCore
       @trigger = block
     end
 
-    # Consume pending event data and fire all triggers.
-    # Returns true if one or more triggers where removed
-    # due to returning true
+    # Consume pending event data and fire the trigger,
+    # closing if the trigger returns (explicitly) false.
     def notify_trigger
       event_data = consume_event_data!
       event = event_factory(event_data)
-      if @trigger && @trigger.call(event)
-        close!
+      if @trigger
+        # Not just !@trigger.call(event), we want explicitly "false"
+        close! if @trigger.call(event) == false
       end
     end
   end
@@ -236,13 +235,13 @@ module EventCore
     end
 
     # Add an idle callback to the loop. Will be removed like any other
-    # if it returns with 'next true'.
+    # if it returns with 'next false'.
     # For one-off dispatches into the main loop, fx. for callbacks from
     # another thread add_once() is even more convenient.
     # Returns the source, so you can close!() it when no longer needed.
     def add_idle(&block)
       source = IdleSource.new
-      source.trigger { next true if block.call  }
+      source.trigger { next false if block.call == false }
       add_source(source)
     end
 
@@ -252,16 +251,16 @@ module EventCore
     # as it will be auto-closed on next mainloop iteration.
     def add_once(&block)
       source = IdleSource.new
-      source.trigger { block.call; next true  }
+      source.trigger { block.call; next false  }
       add_source(source)
     end
 
-    # Add a timeout function to be called periodically, or until it returns with 'next true'.
+    # Add a timeout function to be called periodically, or until it returns with 'next false'.
     # The timeout is in seconds and the first call is fired after it has elapsed.
     # Returns the source, so you can close!() it when no longer needed.
     def add_timeout(secs, &block)
       source = TimeoutSource.new(secs)
-      source.trigger { next true if block.call }
+      source.trigger { next false if block.call == false }
       add_source(source)
     end
 
@@ -272,7 +271,7 @@ module EventCore
     # Returns the source, so you can close!() it when no longer needed.
     def add_unix_signal(*signals, &block)
       source = UnixSignalSource.new(*signals)
-      source.trigger { |signals|  next true if block.call(signals) }
+      source.trigger { |signals|  next false if block.call(signals) == false }
       add_source(source)
     end
 
@@ -291,6 +290,7 @@ module EventCore
         break if @do_quit
       end
 
+      @sources = nil
       @control_source.close!
     end
 
@@ -380,9 +380,9 @@ if __FILE__ == $0
   loop.add_timeout(1) {
     i += 1
     puts "-- #{Time.now.sec}s i=#{i}"
-    if i == 50
+    if i == 5
       loop.add_once { puts "SEND QUIT"; loop.quit }
-      next true
+      next false
     end
   }
 
@@ -391,7 +391,7 @@ if __FILE__ == $0
   thr = Thread.new {
     sleep 4
     puts "Thread here"
-    loop.add_once { puts "WEEEE, idle callback in main loop, send from thread" }
+    loop.add_idle { puts "WEEEE, idle callback in main loop, send from thread" }
     puts "Thread done"
   }
 
