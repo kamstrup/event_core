@@ -1,5 +1,6 @@
 EventCore - General Purpose Main Loop for Ruby
 ==============================================
+Travis CI Status: ![Travis CI Build Status](https://travis-ci.org/kamstrup/event_core.svg?branch=master)
 
 Provides the core of a fully asynchronous application. Modeled for simplicity and robustness,
 less so for super high load or real time environments. Reservations aside, EventCore should
