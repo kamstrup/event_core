@@ -3,7 +3,7 @@ Gem::Specification.new do |s|
   s.version     = '0.0.1'
   s.date        = '2015-03-19'
   s.summary     = "Event Core"
-  s.description = "A versatile event loop with rich posibilities integration "
+  s.description = "A versatile event loop with rich possibilities integration "
   s.authors     = ["Mikkel Kamstrup Erlandsen"]
   s.email       = 'mikkel.kamstrup@xamarin.com'
   s.files       = ["lib/event_core.rb"]
