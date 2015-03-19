@@ -46,7 +46,7 @@ loop.run
 puts 'Done'
 ```
 
-Spin off a child process an check how it goes when it terminates:
+Spin off a child process and get a callback in the main loop when it terminates:
 ```rb
 ...
 loop.spawn("sleep 10") { |status|
