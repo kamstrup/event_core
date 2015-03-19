@@ -4,8 +4,8 @@ require 'thread'
 
 # TODO:
 # - IOSource
-# - Child process reaper aka loop.spawn() API
 # - Recalc timeout on send_wakeup
+# - Docs: fx. that thread integration is add_once()
 
 module EventCore
 
@@ -228,6 +228,11 @@ module EventCore
       @monitor = Monitor.new
 
       @selecting = false
+
+      @sigchld_source = nil
+      @children = []
+
+      @thread = nil
     end
 
     # Add an event source to check in the loop. You can do this from any thread,
@@ -256,8 +261,8 @@ module EventCore
     # no matter how it returns.
     # Returns the source, for API consistency, but it is not really useful,
     # as it will be auto-closed on next mainloop iteration.
-    def add_once(&block)
-      source = IdleSource.new
+    def add_once(delay_secs=nil, &block)
+      source = delay_secs.nil? ? IdleSource.new : TimeoutSource.new(delay_secs)
       source.trigger { block.call; next false  }
       add_source(source)
     end
@@ -282,6 +287,41 @@ module EventCore
       add_source(source)
     end
 
+    # Like Process.spawn(), invoking the given block in the main loop when
+    # the process child process exits. The block is called with the Process::Status
+    # object of the child.
+    #
+    # WARNING: The main loop install a SIGCHLD handler to automatically wait() on processes
+    # started this way. So this function will not work correctly if you tamper with
+    # SIGCHLD yourself.
+    #
+    # When you quit the loop any non-waited for children will be detached with Process.detach()
+    # to prevent zombies.
+    #
+    # Returns the PID of the child (that you should /not/ wait() on).
+    def spawn(*args, &block)
+      if @sigchld_source.nil?
+        @sigchld_source = add_unix_signal("CHLD") {
+          reap_children
+        }
+      end
+
+      pid = Process.spawn(*args)
+      @children << {:pid => pid, :block => block}
+      pid
+    end
+
+    # The Thread instance currently iterating the run() method.
+    # nil if the loop is not running
+    def thread
+      @thread
+    end
+
+    # Returns true iff a thread is currently iterating the loop with the run() method.
+    def running?
+      !@thread.nil?
+    end
+
     # Safe and clean shutdown of the loop.
     # Note that the loop will only shut down on next iteration, not immediately.
     def quit
@@ -293,14 +333,22 @@ module EventCore
     # Start the loop, and do not return before some calls quit().
     # When the loop returns (via quit) it will call close! on all sources.
     def run
+      @thread = Thread.current
+
       loop do
         step
         break if @do_quit
       end
 
-      @sources.each {|source| source.close! }
+      @children.each { |child| Process.detach(child[:pid]) }
+      @children = nil
+
+      @sources.each { |source| source.close! }
       @sources = nil
+
       @control_source.close!
+
+      @thread = nil
     end
 
     # Expert: Run a single iteration of the main loop.
@@ -364,6 +412,24 @@ module EventCore
     private
     def send_wakeup
       send_control('.')
+    end
+
+    private
+    def reap_children
+      # Waiting on pid -1, to reap any child would be tempting, but that could conflict
+      # with other parts of code, not using EventCore, trying to wait() on those pids.
+      # In stead we have to check each child explicitly spawned via loop.spawn(). This
+      # is O(N) in the number of children, naturally, but I haven't found a better way
+      # that is robust.
+      @children.delete_if {|child|
+        if Process.wait(child[:pid], Process::WNOHANG)
+          status = $?
+          child[:block].call(status) unless child[:block].nil?
+          true
+        else
+          false
+        end
+      }
     end
   end
 
