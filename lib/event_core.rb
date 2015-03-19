@@ -312,7 +312,6 @@ module EventCore
       @monitor.synchronize {
         @sources.delete_if do |source|
           if source.closed?
-            puts "DEL #{source}"
             true
           else
             ready_sources << source if source.ready?
