@@ -4,7 +4,8 @@ require 'thread'
 
 # TODO:
 # - IOSource
-# - Child process reaper
+# - Child process reaper aka loop.spawn() API
+# - Recalc timeout on send_wakeup
 
 module EventCore
 
