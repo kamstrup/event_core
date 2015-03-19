@@ -53,7 +53,8 @@ loop.spawn("sleep 10") { |status|
   puts "Child process terminated: #{status}"
 }
 ```
-(Note - ```loop.spawn``` accepts all the same parameters as convential Ruby ```Process.spawn```)
+(Note - ```loop.spawn``` accepts all the same parameters as convential Ruby ```Process.spawn```.
+Also the _status_ argument is a ```Process::Status``` like ```$?```)
 
 Do something on the main loop when a long running thread detects there is work to do:
 ```rb
@@ -68,10 +69,20 @@ thr = Thread.new {
 }
 
 loop.run
+thr.join
 puts 'All done'
-
 ```
 
+Do something repeatedly on each loop iteration, 10 times:
+```rb
+...
+i = 0
+loop.add_idle {
+    i += 1
+    puts "Count #{i}"
+    next false if i == 10
+}
+```
 
 
 Concepts and Architecture
@@ -84,9 +95,9 @@ Caveats & Known Bugs
  - If you use multiple main loops on different threads the reaping of child processes using the async spawn is currently broken
  - Unix signal handlers, for the same signal, between two main loops (in the same process) will clobber each other
  - Unlike GMainLoop, EventCore does not have a concept of priority. All sources on the main loop have equal priority.
- - Currently not working on JRuby
+ - Currently not working on JRuby (unix signal stuff is deadlocking)
 
 FAQ
 ---
  - *Can I have several main loops in the same process*
-   Yes, but see caeveat above, wrt unix signals and loop.spawn()
+   Yes, but see caveat above, wrt unix signals and loop.spawn()
