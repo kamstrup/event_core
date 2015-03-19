@@ -83,6 +83,7 @@ Caveats & Known Bugs
  - If you use multiple main loops on different threads the reaping of child processes using the async spawn is currently broken
  - Unix signal handlers, for the same signal, between two main loops (in the same process) will clobber each other
  - Unlike GMainLoop, EventCore does not have a concept of priority. All sources on the main loop have equal priority.
+ - Currently not working on JRuby
 
 FAQ
 ---
