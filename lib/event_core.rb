@@ -4,8 +4,8 @@ require 'thread'
 
 # TODO:
 # - IOSource
-# - Recalc timeout on send_wakeup
-# - Docs: fx. that thread integration is add_once()
+# - Maybe a super simple event bus
+
 
 module EventCore
 
@@ -203,6 +203,11 @@ module EventCore
         return true
       end
       false
+    end
+
+    def timeout
+      delta = Time.now.to_f - @next_timestamp
+      delta > 0 ? delta : 0
     end
   end
 
@@ -433,44 +438,4 @@ module EventCore
     end
   end
 
-end
-
-if __FILE__ == $0
-  loop = EventCore::MainLoop.new
-
-  loop.add_unix_signal(1) { |signo|
-    puts "SIG1: #{signo}"
-  }
-
-  loop.add_unix_signal(2) { |signo|
-    puts "SIG2: #{signo}"
-    puts "Quitting loop"
-    loop.quit
-  }
-
-  loop.add_timeout(3) { puts "Time: #{Time.now.sec}" }
-
-  i = 0
-  loop.add_timeout(1) {
-    i += 1
-    puts "-- #{Time.now.sec}s i=#{i}"
-    if i == 5
-      loop.add_once { puts "SEND QUIT"; loop.quit }
-      next false
-    end
-  }
-
-  loop.add_once { puts "ONCE" }
-
-  thr = Thread.new {
-    sleep 4
-    puts "Thread here"
-    loop.add_idle { puts "WEEEE, idle callback in main loop, send from thread" }
-    puts "Thread done"
-  }
-
-  loop.run
-  puts "Loop exited gracefully"
-
-  thr.join
 end
