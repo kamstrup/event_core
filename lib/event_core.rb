@@ -111,8 +111,6 @@ module EventCore
   # Send data to the pipe with the (blocking) write() method.
   class PipeSource < Source
 
-    alias :super_close! :close!
-
     def initialize
       super()
       @rio, @wio = IO.pipe
@@ -134,7 +132,7 @@ module EventCore
     end
 
     def close!
-      super_close!
+      super
       @rio.close unless @rio.closed?
       @wio.close unless @wio.closed?
     end
@@ -153,12 +151,14 @@ module EventCore
   # There can be more than one signal number if more than one signal fired
   # since the source was last checked. Signal names can be recovered with
   # Signal.signame().
+  #
+  # Closing the signal handler will set the trap handler to DEFAULT.
   class UnixSignalSource < PipeSource
 
     # We need to allocate the signal messages we send over the pipe up front,
     # to avoid allocating memory (building strings) inside the signal trap context.
-    # A signal message is just its integer value as a string trailed by a newline.
-    SIGNAL_MESSAGES_BY_SIGNO = Hash[Signal.list.map {|k,v| [v, "#{v}\n"]}]
+    # A signal message is just its integer value as a string trailed by a + sign.
+    SIGNAL_MESSAGES_BY_SIGNO = Hash[Signal.list.map {|k,v| [v, "#{v}+"]}]
 
     # Give it a list of signals, names or integers, to listen for.
     def initialize(*signals)
@@ -173,7 +173,13 @@ module EventCore
 
     def event_factory(event_data)
       # We may have received more than one signal since last check
-      event_data.split('\n').map { |datum| datum.to_i }
+      event_data.split('+').map { |datum| datum.to_i }
+    end
+
+    def close!
+      super
+      # Restore default signal handlers
+      @signals.each { |sig_name| Signal.trap(sig_name, "DEFAULT")}
     end
 
   end
@@ -284,12 +290,14 @@ module EventCore
     end
 
     # Start the loop, and do not return before some calls quit().
+    # When the loop returns (via quit) it will call close! on all sources.
     def run
       loop do
         step
         break if @do_quit
       end
 
+      @sources.each {|source| source.close! }
       @sources = nil
       @control_source.close!
     end
