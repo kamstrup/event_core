@@ -207,7 +207,7 @@ module EventCore
   end
 
   # Core data structure for handling and polling Sources.
-  class EventLoop
+  class MainLoop
 
     def initialize
       @sources = []
@@ -436,7 +436,7 @@ module EventCore
 end
 
 if __FILE__ == $0
-  loop = EventCore::EventLoop.new
+  loop = EventCore::MainLoop.new
 
   loop.add_unix_signal(1) { |signo|
     puts "SIG1: #{signo}"

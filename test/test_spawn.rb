@@ -4,7 +4,7 @@ require 'event_core'
 class TestSpawn < Test::Unit::TestCase
 
   def setup
-    @loop = EventCore::EventLoop.new
+    @loop = EventCore::MainLoop.new
   end
 
   def teardown
