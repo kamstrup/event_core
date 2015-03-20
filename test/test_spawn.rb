@@ -5,6 +5,7 @@ class TestSpawn < Test::Unit::TestCase
 
   def setup
     @loop = EventCore::MainLoop.new
+    @loop.add_once(30) { raise 'Test timed out' }
   end
 
   def teardown
