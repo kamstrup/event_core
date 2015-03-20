@@ -5,6 +5,7 @@ class TestUnixSignal < Test::Unit::TestCase
 
   def setup
     @loop = EventCore::MainLoop.new
+    @loop.add_once(30) { raise 'Test timed out!' }
     @sources = []
   end
 
@@ -14,35 +15,36 @@ class TestUnixSignal < Test::Unit::TestCase
   end
 
   def test_1sig
-    got_signal = false
-    @sources << @loop.add_unix_signal("USR2") { got_signal = true }
-    Process.kill("USR2", Process.pid)
-    sleep 0.2 # Allow signal to reach back to us
-    @loop.step
-    assert_equal true, got_signal
+    nsignals = 0
+    @sources << @loop.add_unix_signal("USR2") { nsignals += 1 }
+    @loop.add_once(0.2) { Process.kill("USR2", Process.pid) }
+    @loop.add_once(0.4) { @loop.quit }
+    @loop.run
+    assert_equal 1, nsignals
   end
 
   def test_1sig_multi
     nsignals = 0
     @sources << @loop.add_unix_signal("USR2") { |signals| nsignals += signals.length}
 
-    (1..10).each {
-      Process.kill("USR2", Process.pid)
-      sleep 0.2 # Allow signal to reach back to us
+    (1..10).each { |i|
+      @loop.add_once(0.2*i) { Process.kill("USR2", Process.pid) }
     }
-    @loop.step
+    @loop.add_once(11*0.2) { @loop.quit }
+
+    @loop.run
     assert_equal 10, nsignals
   end
 
   def test_2sig
     got_signal1 = false
     got_signal2 = false
-    @sources << @loop.add_unix_signal("USR1") { got_signal1 = true }
+    @sources << @loop.add_unix_signal("HUP") { got_signal1 = true }
     @sources << @loop.add_unix_signal("USR2") { got_signal2 = true }
-    Process.kill("USR1", Process.pid)
-    Process.kill("USR2", Process.pid)
-    sleep 0.5 # Allow signals reach back to us
-    @loop.step
+    @loop.add_once(0.2) { Process.kill("HUP", Process.pid) }
+    @loop.add_once(0.3) { Process.kill("USR2", Process.pid) }
+    @loop.add_once(0.4) { @loop.quit }
+    @loop.run
     assert_equal true, got_signal1
     assert_equal true, got_signal2
   end

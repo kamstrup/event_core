@@ -144,43 +144,38 @@ module EventCore
 
   end
 
-  # A source that mashals Unix signals to be handled in the main loop.
-  # This detaches you from the dreaded Ruby "trap context", and allows
-  # you to do what you like in the signal handler.
+  # A source that marshals Unix signals to be handled in the main loop.
+  # This detaches you from the dreaded "trap context", and allows
+  # you to reason about the state of the rest of your app
+  # in the signal handler.
   #
-  # The trigger is called with an array of signal numbers as argument.
-  # There can be more than one signal number if more than one signal fired
-  # since the source was last checked. Signal names can be recovered with
-  # Signal.signame().
+  # The trigger is called with an array of signals as argument.
+  # There can be more than one signal if more than one signal fired
+  # since the source was last checked.
   #
   # Closing the signal handler will set the trap handler to DEFAULT.
   class UnixSignalSource < PipeSource
 
-    # We need to allocate the signal messages we send over the pipe up front,
-    # to avoid allocating memory (building strings) inside the signal trap context.
-    # A signal message is just its integer value as a string trailed by a + sign.
-    SIGNAL_MESSAGES_BY_SIGNO = Hash[Signal.list.map {|k,v| [v, "#{v}+"]}]
-
     # Give it a list of signals, names or integers, to listen for.
     def initialize(*signals)
       super()
-      @signals = signals.map { |sig| sig.is_a?(Integer) ? Signal.signame(sig) : sig.to_s}
-      @signals.each do |sig_name|
-        Signal.trap(sig_name) do |signo|
-          write(SIGNAL_MESSAGES_BY_SIGNO[signo])
+      @signals = signals
+      @signals.each do |sig|
+        Signal.trap(sig) do
+          write("#{sig}+")
         end
       end
     end
 
     def event_factory(event_data)
       # We may have received more than one signal since last check
-      event_data.split('+').map { |datum| datum.to_i }
+      event_data.split('+')
     end
 
     def close!
       super
       # Restore default signal handlers
-      @signals.each { |sig_name| Signal.trap(sig_name, "DEFAULT")}
+      @signals.each { |sig| Signal.trap(sig, "DEFAULT")}
     end
 
   end
@@ -206,7 +201,7 @@ module EventCore
     end
 
     def timeout
-      delta = Time.now.to_f - @next_timestamp
+      delta = @next_timestamp - Time.now.to_f
       delta > 0 ? delta : 0
     end
   end
