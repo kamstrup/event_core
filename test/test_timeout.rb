@@ -35,4 +35,30 @@ class TestTimeout < Test::Unit::TestCase
     assert_equal 1, ntimeouts
   end
 
+  def test_no_busy_spin
+    # ample time to busy-check many times - in case we have a bug
+    t = TimeoutCheckSource.new(0.5)
+    t.trigger { @loop.quit; next false }
+    @loop.add_source(t)
+    @loop.run
+
+    assert 1 < t.nchecks and t.nchecks < 6
+  end
+
+  class TimeoutCheckSource < EventCore::TimeoutSource
+
+    attr_reader :nchecks
+
+    def initialize(secs)
+      super(secs)
+      @nchecks = 0
+    end
+
+    def timeout
+      t = super
+      @nchecks += 1
+      t
+    end
+  end
+
 end
