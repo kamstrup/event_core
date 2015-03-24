@@ -210,29 +210,31 @@ module EventCore
   class MainLoop
 
     def initialize
-      @sources = []
-
-      # Only ever set @do_quit through the quit() method!
-      # Otherwise the state of the loop will be undefiend
-      @do_quit = false
-      @control_source = PipeSource.new
-      @control_source.trigger { |event|
-        # We can get multiple control messages in one event,
-        # so generally it is a "string of control chars", hence the include? and not ==
-        @do_quit = true if event.include?('q')
-      }
-      @sources << @control_source
-
       # We use a monitor, not a mutex, becuase Ruby mutexes are not reentrant,
       # and we need reentrancy to be able to add sources from within trigger callbacks
       @monitor = Monitor.new
 
-      @selecting = false
+      @monitor.synchronize {
+        @sources = []
 
-      @sigchld_source = nil
-      @children = []
+        # Only ever set @do_quit through the quit() method!
+        # Otherwise the state of the loop will be undefiend
+        @do_quit = false
+        @control_source = PipeSource.new
+        @control_source.trigger { |event|
+          # We can get multiple control messages in one event,
+          # so generally it is a "string of control chars", hence the include? and not ==
+          @do_quit = true if event.include?('q')
+        }
+        @sources << @control_source
 
-      @thread = nil
+        @selecting = false
+
+        @sigchld_source = nil
+        @children = []
+
+        @thread = nil
+      }
     end
 
     # Add an event source to check in the loop. You can do this from any thread,
