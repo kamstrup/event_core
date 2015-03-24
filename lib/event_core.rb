@@ -242,6 +242,7 @@ module EventCore
     # Returns the source, so you can close!() it when no longer needed.
     def add_source(source)
       @monitor.synchronize {
+        raise "Unable to add source - loop terminated" if @sources.nil?
         @sources << source
         send_wakeup if @selecting
       }
@@ -342,15 +343,17 @@ module EventCore
         break if @do_quit
       end
 
-      @children.each { |child| Process.detach(child[:pid]) }
-      @children = nil
+      @monitor.synchronize {
+        @children.each { |child| Process.detach(child[:pid]) }
+        @children = nil
 
-      @sources.each { |source| source.close! }
-      @sources = nil
+        @sources.each { |source| source.close! }
+        @sources = nil
 
-      @control_source.close!
+        @control_source.close!
 
-      @thread = nil
+        @thread = nil
+      }
     end
 
     # Expert: Run a single iteration of the main loop.
