@@ -3,8 +3,9 @@ require 'monitor'
 require 'thread'
 
 # TODO:
-# - IOSource
 # - Maybe a super simple event bus
+# - unit tests for error reporting in add_read/write
+
 
 
 module EventCore
@@ -39,7 +40,13 @@ module EventCore
     end
 
     # An optional IO object to select on
-    def select_io()
+    def select_io
+      nil
+    end
+
+    # Returns :read, :write, or nil. If select_io is non-nil,
+    # then the select_type must not be nil.
+    def select_type
       nil
     end
 
@@ -124,6 +131,10 @@ module EventCore
       @rio
     end
 
+    def select_type
+      :read
+    end
+
     def consume_event_data!
       @rio.read_nonblock(@buffer_size)
     end
@@ -140,6 +151,34 @@ module EventCore
 
     def write(buf)
       @wio.write(buf)
+    end
+
+  end
+
+  class IOSource < Source
+
+    def initialize(io, type)
+      super()
+      raise "Nil IO provided" if io.nil?
+      @io = io
+      @type = type
+      raise "Invalid select type: #{type}" unless [:read, :write].include?(type)
+    end
+
+    def select_io
+      @io
+    end
+
+    def select_type
+      @type
+    end
+
+    def consume_event_data!
+      nil
+    end
+
+    def close!
+      @io.close unless @io.closed?
     end
 
   end
@@ -291,6 +330,59 @@ module EventCore
       add_source(source)
     end
 
+    # Asynchronously write buf to io. Invokes block when complete,
+    # giving any encountered exception as argument, nil on success.
+    # Returns the source so you can close! it to cancel.
+    def add_write(io, buf, &block)
+      source = IOSource.new(io, :write)
+      source.trigger {
+        begin
+          # Note: because of string encoding snafu, Ruby can report more bytes read than buf.length!
+          len = io.write_nonblock(buf)
+          if len == buf.bytesize
+            block.call(nil)
+            next false
+          end
+          buf = buf.byteslice(len..-1)
+          next true
+        rescue IO::WaitWritable
+          # All good, wait until we're writable again
+          next true
+        rescue => e
+          block.call(e)
+          next false
+        end
+      }
+      add_source(source)
+    end
+
+    # Asynchronously read an IO calling the block each time data is ready.
+    # The block receives to arguments: the read buffer, and an exception.
+    # The read buffer will be nil when EOF has been reached in which case
+    # the IO will be closed and the source removed from the loop.
+    # Returns the source so you can cancel the read with source.close!
+    def add_read(io, &block)
+      source = IOSource.new(io, :read)
+      source.trigger {
+        begin
+          loop do
+            buf = io.read_nonblock(4096*4) # 4 pages
+            block.call(buf, nil)
+          end
+        rescue IO::WaitReadable
+          # All good, wait until we're writable again
+          next true
+        rescue EOFError
+          block.call(nil, nil)
+          next false
+        rescue => e
+          block.call(nil, e)
+          next false
+        end
+      }
+      add_source(source)
+    end
+
     # Add a callback to invoke when the loop is quitting, before it becomes invalid.
     # Sources added during the callback will not be invoked, but will be cleaned up.
     def add_quit(&block)
@@ -372,6 +464,8 @@ module EventCore
       # Collect sources
       ready_sources = []
       select_sources_by_ios = {}
+      read_ios = []
+      write_ios = []
       timeouts = []
 
       @monitor.synchronize {
@@ -381,8 +475,18 @@ module EventCore
           else
             ready_sources << source if source.ready?
 
-            unless source.select_io.nil?
-              select_sources_by_ios[source.select_io] = source
+            io = source.select_io
+            unless io.nil? || io.closed?
+              case source.select_type
+                when :read
+                  read_ios << io
+                when :write
+                  write_ios << io
+                else
+                  raise "Invalid source select_type: #{source.select_type}"
+              end
+
+              select_sources_by_ios[io] = source
             end
 
             timeouts << source.timeout unless source.timeout.nil?
@@ -405,7 +509,7 @@ module EventCore
       # Release lock while we're selecting so users can add sources. add_source() will see
       # that we are stuck in a select() and do send_wakeup().
       # Note: Only select() without locking, everything else must be locked!
-      read_ios, write_ios, exception_ios = IO.select(select_sources_by_ios.keys, [], [], timeouts.min)
+      read_ios, write_ios, exception_ios = IO.select(read_ios, write_ios, [], timeouts.min)
 
       @monitor.synchronize {
         @selecting = false
@@ -413,6 +517,12 @@ module EventCore
         # On timeout read_ios will be nil
         unless read_ios.nil?
           read_ios.each { |io|
+            select_sources_by_ios[io].notify_trigger
+          }
+        end
+
+        unless write_ios.nil?
+          write_ios.each { |io|
             select_sources_by_ios[io].notify_trigger
           }
         end
