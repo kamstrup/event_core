@@ -216,6 +216,7 @@ module EventCore
 
       @monitor.synchronize {
         @sources = []
+        @quit_handlers = []
 
         # Only ever set @do_quit through the quit() method!
         # Otherwise the state of the loop will be undefiend
@@ -290,6 +291,14 @@ module EventCore
       add_source(source)
     end
 
+    # Add a callback to invoke when the loop is quitting, before it becomes invalid.
+    # Sources added during the callback will not be invoked, but will be cleaned up.
+    def add_quit(&block)
+      @monitor.synchronize {
+        @quit_handlers << block
+      }
+    end
+
     # Like Process.spawn(), invoking the given block in the main loop when
     # the process child process exits. The block is called with the Process::Status
     # object of the child.
@@ -344,6 +353,8 @@ module EventCore
       end
 
       @monitor.synchronize {
+        @quit_handlers.each { |block| block.call }
+
         @children.each { |child| Process.detach(child[:pid]) }
         @children = nil
 
