@@ -178,6 +178,7 @@ module EventCore
     end
 
     def close!
+      super
       @io.close unless @io.closed?
     end
 
