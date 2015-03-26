@@ -341,7 +341,7 @@ module EventCore
           # Note: because of string encoding snafu, Ruby can report more bytes read than buf.length!
           len = io.write_nonblock(buf)
           if len == buf.bytesize
-            block.call(nil)
+            block.call(nil) unless block.nil?
             next false
           end
           buf = buf.byteslice(len..-1)
@@ -350,7 +350,7 @@ module EventCore
           # All good, wait until we're writable again
           next true
         rescue => e
-          block.call(e)
+          block.call(e) unless block.nil?
           next false
         end
       }
