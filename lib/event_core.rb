@@ -138,7 +138,11 @@ module EventCore
     end
 
     def consume_event_data!
-      @rio.read_nonblock(@buffer_size)
+      begin
+        @rio.read_nonblock(@buffer_size)
+      rescue EOFError
+        nil
+      end
     end
 
     def closed?
@@ -270,11 +274,10 @@ module EventCore
         @control_source.trigger { |event|
           # We can get multiple control messages in one event,
           # so generally it is a "string of control chars", hence the include? and not ==
-          @do_quit = true if event.include?('q')
+          # If event is nil, it means the pipe has been closed
+          @do_quit = true if event.nil? || event.include?('q')
         }
         @sources << @control_source
-
-        @selecting = false
 
         @sigchld_source = nil
         @children = []
@@ -288,9 +291,10 @@ module EventCore
     # Returns the source, so you can close!() it when no longer needed.
     def add_source(source)
       @monitor.synchronize {
+        wakeup_needed = !@thread.nil? && @thread != Thread.current
         raise "Unable to add source - loop terminated" if @sources.nil?
         @sources << source
-        send_wakeup if @selecting
+        send_wakeup if wakeup_needed
       }
       source
     end
@@ -505,11 +509,6 @@ module EventCore
         ready_sources.each { |source|
           source.notify_trigger
         }
-
-        # Note1: select_sources_by_ios is never empty - we always have the quit source in there.
-        #        We need that assumption to ensure timeouts work
-        # Note2: timeouts.min is nil if there are no timeouts, causing infinite blocking - as intended
-        @selecting = true
       }
 
       # Release lock while we're selecting so users can add sources. add_source() will see
@@ -518,8 +517,6 @@ module EventCore
       read_ios, write_ios, exception_ios = IO.select(read_ios, write_ios, [], timeouts.min)
 
       @monitor.synchronize {
-        @selecting = false
-
         # On timeout read_ios will be nil
         unless read_ios.nil?
           read_ios.each { |io|
@@ -533,13 +530,14 @@ module EventCore
           }
         end
       }
+
+      @do_quit = true if @control_source.closed?
     end
 
     private
     def send_control(char)
       raise "Illegal control character '#{char}'" unless ['.', 'q'].include?(char)
-      ctrl_source = add_write(@control_source.wio, char)
-      ctrl_source.auto_close = false
+      @control_source.write(char)
     end
 
     private
