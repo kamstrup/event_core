@@ -28,4 +28,23 @@ class TestOnce < Test::Unit::TestCase
     assert_equal 2, n
   end
 
+  def test_once_recursive
+    n = 0
+    @loop.add_once {
+      n += 1
+      @loop.add_once {
+        n += 1
+        @loop.add_once(0.1) {
+          n += 1
+          @loop.quit
+        }
+      }
+
+      @loop.add_once { n += 1 }
+    }
+
+    @loop.run
+    assert_equal 4, n
+  end
+
 end
