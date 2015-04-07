@@ -119,6 +119,8 @@ module EventCore
   # Send data to the pipe with the (blocking) write() method.
   class PipeSource < Source
 
+    attr_reader :rio, :wio
+
     def initialize
       super()
       @rio, @wio = IO.pipe
@@ -157,11 +159,14 @@ module EventCore
 
   class IOSource < Source
 
+    attr_accessor :auto_close
+
     def initialize(io, type)
       super()
       raise "Nil IO provided" if io.nil?
       @io = io
       @type = type
+      @auto_close = true
       raise "Invalid select type: #{type}" unless [:read, :write].include?(type)
     end
 
@@ -179,7 +184,7 @@ module EventCore
 
     def close!
       super
-      @io.close unless @io.closed?
+      @io.close if @auto_close and not @io.closed?
     end
 
   end
@@ -533,7 +538,8 @@ module EventCore
     private
     def send_control(char)
       raise "Illegal control character '#{char}'" unless ['.', 'q'].include?(char)
-      @control_source.write(char)
+      ctrl_source = add_write(@control_source.wio, char)
+      ctrl_source.auto_close = false
     end
 
     private
