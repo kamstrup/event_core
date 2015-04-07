@@ -22,8 +22,8 @@ class TestOnce < Test::Unit::TestCase
   def test_2once
     n = 0
     @loop.add_once { n += 1 }
+    @loop.add_once(0.1) {n += 1}
     @loop.add_timeout(0.2) { @loop.quit }
-    @loop.add_timeout(0.1) { @loop.add_once {n += 1} }
     @loop.run
     assert_equal 2, n
   end
