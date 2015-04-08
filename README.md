@@ -99,5 +99,8 @@ Caveats & Known Bugs
 
 FAQ
 ---
+ - *Is it any good?*
+   Yes
  - *Can I have several main loops in the same process*
    Yes, but see caveat above, wrt unix signals and loop.spawn()
+
