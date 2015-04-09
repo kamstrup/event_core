@@ -98,7 +98,7 @@ module EventCore
     def initialize(event_data=nil)
       super()
       @ready = true
-      @event_data
+      @event_data = event_data
     end
 
     def ready?
