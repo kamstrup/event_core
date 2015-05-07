@@ -476,7 +476,7 @@ module EventCore
       select_sources_by_ios = {}
       read_ios = []
       write_ios = []
-      timeouts = []
+      timeout = 0
 
       @monitor.synchronize {
         @sources.delete_if do |source|
@@ -499,36 +499,37 @@ module EventCore
               select_sources_by_ios[io] = source
             end
 
-            timeouts << source.timeout unless source.timeout.nil?
+            dt = source.timeout
+            timeout = dt.nil? ? 0 : (dt < timeout ? dt : timeout)
 
             false
           end
         end
-
-        # Dispatch all sources marked ready
-        ready_sources.each { |source|
-          source.notify_trigger
-        }
       }
 
       # Release lock while we're selecting so users can add sources. add_source() will see
       # that we are stuck in a select() and do send_wakeup().
       # Note: Only select() without locking, everything else must be locked!
-      read_ios, write_ios, exception_ios = IO.select(read_ios, write_ios, [], timeouts.min)
+      read_ios, write_ios, exception_ios = IO.select(read_ios, write_ios, [], timeout)
 
       @monitor.synchronize {
         # On timeout read_ios will be nil
         unless read_ios.nil?
           read_ios.each { |io|
-            select_sources_by_ios[io].notify_trigger
+            ready_sources << select_sources_by_ios[io]
           }
         end
 
         unless write_ios.nil?
           write_ios.each { |io|
-            select_sources_by_ios[io].notify_trigger
+            ready_sources << select_sources_by_ios[io]
           }
         end
+      }
+
+      # Dispatch all sources marked ready
+      ready_sources.each { |source|
+        source.notify_trigger
       }
 
       @do_quit = true if @control_source.closed?

@@ -45,6 +45,34 @@ class TestTimeout < Test::Unit::TestCase
     assert 1 < t.nchecks and t.nchecks < 6
   end
 
+  # Asserts that an idle source added from inside a slow timeout trigger is called
+  # immediately - waking up the main loop.
+  # We do this by adding a spinning idle trigger on the first tick of a 1s timeout,
+  # and asserting that it does 10 busy spins before the second step of the 1s timeout
+  def test_wakeup_from_timeout
+    outer_counter = 0
+    inner_counter = 0
+    @loop.add_timeout(1) {
+      if outer_counter >= 1
+        fail("Inner loop not dispatched in time (inner: #{inner_counter}, outer: #{outer_counter})")
+      end
+
+      # This trigger should fire immediately and reach 10, before the next 1s timeout fires
+      @loop.add_idle {
+        inner_counter += 1
+        if inner_counter == 10
+          @loop.quit
+          next false
+        end
+      }
+      outer_counter += 1
+    }
+    @loop.run
+
+    assert_equal 10, inner_counter
+    assert_equal 1, outer_counter
+  end
+
   class TimeoutCheckSource < EventCore::TimeoutSource
 
     attr_reader :nchecks
