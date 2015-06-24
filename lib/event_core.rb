@@ -1,6 +1,7 @@
 require 'fcntl'
 require 'monitor'
 require 'thread'
+require 'fiber'
 
 # TODO:
 # - Maybe a super simple event bus
@@ -191,6 +192,69 @@ module EventCore
       @io.close if @auto_close and not @io.closed?
     end
 
+  end
+
+  class FiberSource < Source
+
+    def initialize(loop, proc)
+      super()
+      raise "First arg must be a MainLoop: #{loop}" unless loop.is_a? MainLoop
+      raise "Second arg must be a Proc: #{proc.class}" unless proc.is_a? Proc
+
+      @loop = loop
+      @fiber = Fiber.new do
+        proc.call
+      end
+
+      @ready = true
+
+      trigger { |async_task_data|
+        task = @fiber.resume(async_task_data)
+
+        # If yielding, maybe spawn an async sub-task?
+        if @fiber.alive?
+          if task.is_a? Proc
+            @ready = false
+            loop.add_once {
+              fiber_task = FiberTask.new(self)
+              task.call(fiber_task)
+            }
+          elsif task.nil?
+            # all good, just yielding until next loop iteration
+          else
+            raise "Fibers that yield must return nil or a Proc: #{task.class}"
+          end
+        end
+
+        next @fiber.alive?
+      }
+    end
+
+    def ready!(event_data=nil)
+      super(event_data)
+      @loop.send_wakeup
+    end
+
+    def consume_event_data!
+      event_data = super
+      @ready = true
+      event_data
+    end
+
+    def close!
+      super
+      @fiber = nil
+    end
+  end
+
+  class FiberTask
+    def initialize(fiber_source)
+      @fiber_source = fiber_source
+    end
+
+    def done(result)
+      @fiber_source.ready!(result)
+    end
   end
 
   # A source that marshals Unix signals to be handled in the main loop.
@@ -393,6 +457,11 @@ module EventCore
       add_source(source)
     end
 
+    def add_fiber(&block)
+      source = FiberSource.new(self, block)
+      add_source(source)
+    end
+
     # Add a callback to invoke when the loop is quitting, before it becomes invalid.
     # Sources added during the callback will not be invoked, but will be cleaned up.
     def add_quit(&block)
@@ -535,15 +604,16 @@ module EventCore
       @do_quit = true if @control_source.closed?
     end
 
+    # Expert: wake up the main loop, forcing it to check all sources.
+    # Useful if you're twiddling readyness of sources "out of band".
+    def send_wakeup
+      send_control('.')
+    end
+
     private
     def send_control(char)
       raise "Illegal control character '#{char}'" unless ['.', 'q'].include?(char)
       @control_source.write(char)
-    end
-
-    private
-    def send_wakeup
-      send_control('.')
     end
 
     private
