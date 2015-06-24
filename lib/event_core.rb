@@ -194,6 +194,10 @@ module EventCore
 
   end
 
+  # Source for Ruby Fibers run on the mainloop.
+  # When a fiber yields it returns control to the mainloop.
+  # It supports async sub-tasks in sync-style programming by yielding Procs.
+  # See MainLoop.add_fiber for details.
   class FiberSource < Source
 
     def initialize(loop, proc)
@@ -214,7 +218,7 @@ module EventCore
         # If yielding, maybe spawn an async sub-task?
         if @fiber.alive?
           if task.is_a? Proc
-            @ready = false
+            @ready = false # don't fire again until task is done
             loop.add_once {
               fiber_task = FiberTask.new(self)
               task.call(fiber_task)
@@ -247,12 +251,15 @@ module EventCore
     end
   end
 
+  # Encapsulates state of an async task spun off from a fiber.
   class FiberTask
     def initialize(fiber_source)
       @fiber_source = fiber_source
     end
 
-    def done(result)
+    # Mark yielded fiber ready for resumption. If the task has a result supply that as argument to done(),
+    # and it will become the result of the yield.
+    def done(result=nil)
       @fiber_source.ready!(result)
     end
   end
@@ -457,9 +464,35 @@ module EventCore
       add_source(source)
     end
 
+    # Schedule a block of code to be run inside a Ruby Fiber.
+    # If the block calls loop.yield without any argument the fiber
+    # will simply be resumed repeatedly in subsequent iterations of
+    # the loop, until it terminates.
+    # If loop.yield is called with a block it signals that the proc should be
+    # executed as an async task and the result of the task delivered as return
+    # value from loop.yield. The block supplied must take a single argument
+    # which is a FiberTask instance. When the task is complete you *must* call
+    # task.done to return to the yielded fiber.
+    # The (optional) argument you supply to task.done(result) will be passed back
+    # to the yielded fiber.
+    #
+    # Example:
+    #
+    #   loop.add_fiber {
+    #     puts 'Waiting for slow result...'
+    #     slow_result = loop.yield { |task|
+    #                     Thread.new { sleep 10; task.done('This took 10s') }
+    #                   }
+    #     puts slow_result
+    #   }
+    #
     def add_fiber(&block)
       source = FiberSource.new(self, block)
       add_source(source)
+    end
+
+    def yield(&block)
+      Fiber.yield block
     end
 
     # Add a callback to invoke when the loop is quitting, before it becomes invalid.
