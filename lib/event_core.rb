@@ -1,6 +1,7 @@
 require 'fcntl'
 require 'monitor'
 require 'thread'
+require 'fiber'
 
 # TODO:
 # - Maybe a super simple event bus
@@ -191,6 +192,76 @@ module EventCore
       @io.close if @auto_close and not @io.closed?
     end
 
+  end
+
+  # Source for Ruby Fibers run on the mainloop.
+  # When a fiber yields it returns control to the mainloop.
+  # It supports async sub-tasks in sync-style programming by yielding Procs.
+  # See MainLoop.add_fiber for details.
+  class FiberSource < Source
+
+    def initialize(loop, proc)
+      super()
+      raise "First arg must be a MainLoop: #{loop}" unless loop.is_a? MainLoop
+      raise "Second arg must be a Proc: #{proc.class}" unless proc.is_a? Proc
+
+      @loop = loop
+      @fiber = Fiber.new do
+        proc.call
+      end
+
+      @ready = true
+
+      trigger { |async_task_data|
+        task = @fiber.resume(async_task_data)
+
+        # If yielding, maybe spawn an async sub-task?
+        if @fiber.alive?
+          if task.is_a? Proc
+            @ready = false # don't fire again until task is done
+            loop.add_once {
+              fiber_task = FiberTask.new(self)
+              task.call(fiber_task)
+            }
+          elsif task.nil?
+            # all good, just yielding until next loop iteration
+          else
+            raise "Fibers that yield must return nil or a Proc: #{task.class}"
+          end
+        end
+
+        next @fiber.alive?
+      }
+    end
+
+    def ready!(event_data=nil)
+      super(event_data)
+      @loop.send_wakeup
+    end
+
+    def consume_event_data!
+      event_data = super
+      @ready = true
+      event_data
+    end
+
+    def close!
+      super
+      @fiber = nil
+    end
+  end
+
+  # Encapsulates state of an async task spun off from a fiber.
+  class FiberTask
+    def initialize(fiber_source)
+      @fiber_source = fiber_source
+    end
+
+    # Mark yielded fiber ready for resumption. If the task has a result supply that as argument to done(),
+    # and it will become the result of the yield.
+    def done(result=nil)
+      @fiber_source.ready!(result)
+    end
   end
 
   # A source that marshals Unix signals to be handled in the main loop.
@@ -393,6 +464,37 @@ module EventCore
       add_source(source)
     end
 
+    # Schedule a block of code to be run inside a Ruby Fiber.
+    # If the block calls loop.yield without any argument the fiber
+    # will simply be resumed repeatedly in subsequent iterations of
+    # the loop, until it terminates.
+    # If loop.yield is called with a block it signals that the proc should be
+    # executed as an async task and the result of the task delivered as return
+    # value from loop.yield. The block supplied must take a single argument
+    # which is a FiberTask instance. When the task is complete you *must* call
+    # task.done to return to the yielded fiber.
+    # The (optional) argument you supply to task.done(result) will be passed back
+    # to the yielded fiber.
+    #
+    # Example:
+    #
+    #   loop.add_fiber {
+    #     puts 'Waiting for slow result...'
+    #     slow_result = loop.yield { |task|
+    #                     Thread.new { sleep 10; task.done('This took 10s') }
+    #                   }
+    #     puts slow_result
+    #   }
+    #
+    def add_fiber(&block)
+      source = FiberSource.new(self, block)
+      add_source(source)
+    end
+
+    def yield(&block)
+      Fiber.yield block
+    end
+
     # Add a callback to invoke when the loop is quitting, before it becomes invalid.
     # Sources added during the callback will not be invoked, but will be cleaned up.
     def add_quit(&block)
@@ -535,15 +637,16 @@ module EventCore
       @do_quit = true if @control_source.closed?
     end
 
+    # Expert: wake up the main loop, forcing it to check all sources.
+    # Useful if you're twiddling readyness of sources "out of band".
+    def send_wakeup
+      send_control('.')
+    end
+
     private
     def send_control(char)
       raise "Illegal control character '#{char}'" unless ['.', 'q'].include?(char)
       @control_source.write(char)
-    end
-
-    private
-    def send_wakeup
-      send_control('.')
     end
 
     private

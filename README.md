@@ -7,6 +7,7 @@ less so for super high load or real time environments. Reservations aside, Event
 still easily provide low enough latency and high enough throughput for most applications.
 
 Features:
+ - Call async functions in a sync calling style, like C# async/await
  - Timeouts.
  - Fire-once events.
  - Fire-repeatedly events.
@@ -84,10 +85,37 @@ loop.add_idle {
 }
 ```
 
+Do intense blocking computations on the mainloop, but allow the loop to run every once in a while by using fibers:
+```rb
+loop.add_fiber {
+    # heavy data crunching here
+    loop.yield
+    # more data crunching
+    loop.yield
+    # even more crunching - ad lib!
+}
+```
+
+Async Calls with Sync Calling Style
+-----------------------------------
+By leveraging standard Ruby Fibers EventCore allows you to call async functions in a synchronous style. Similarly to
+the popular feature in C# et al:
+```rb
+loop.add_fiber {
+  puts 'Waiting for slow result...'
+  slow_result = loop.yield { |task|
+    Thread.new { sleep 10; task.done('This took 10s') }
+  }
+  puts slow_result
+}
+# prints 'Waiting for slow result...' and then after 10s 'This took 10s'
+```
+
+
 
 Concepts and Architecture
 -------------------------
-TODO, mainloop, sources, triggers, idles, timeouts, select io
+TODO, mainloop, sources, triggers, idles, timeouts, select io, fibers
 
 Caveats & Known Bugs
 --------------------
@@ -103,4 +131,6 @@ FAQ
    Yes
  - *Can I have several main loops in the same process*
    Yes, but see caveat above, wrt unix signals and loop.spawn()
+ - Is this stable? Production ready?
+   Yes. It's been running on production services for months now without a single issue.
 
