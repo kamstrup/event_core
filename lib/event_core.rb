@@ -509,7 +509,9 @@ module EventCore
     # run in a new thread. Unlike loop.yield the block must not take any arguments;
     # it is simply the raw result from the block that is send back to the yielding fiber.
     def yield_from_thread(&block)
-      raise "A block must be provided" if block.nil?
+      raise 'A block must be provided' if block.nil?
+      raise "Block must take exactly 0 arguments: #{block.arity}" unless block.arity == 0
+
       self.yield do |task|
         thread = Thread.new {
           begin
