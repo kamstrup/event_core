@@ -55,9 +55,7 @@ class TestThread < Test::Unit::TestCase
     @loop.add_fiber {
       fiber_count += 2
       @loop.yield
-      fiber_count += @loop.yield { |task|
-                             Thread.new { sleep 3; task.done(11) }
-                           }
+      fiber_count += @loop.yield_from_thread { sleep 3; 11 }
       @loop.yield
       fiber_count += 5
       @loop.add_once { @loop.quit }

@@ -108,9 +108,18 @@ loop.add_fiber {
   }
   puts slow_result
 }
-# prints 'Waiting for slow result...' and then after 10s 'This took 10s'
+# prints 'Waiting for slow result...' and then after 10s 'This took 10s'. Main loop never blocked.
 ```
 
+Or slightly more precise, by using the ```yield_from_thread``` helper function:
+```rb
+loop.add_fiber {
+  puts 'Waiting for slow result...'
+  slow_result = loop.yield_from_thread { sleep 10; 'This took 10s' }
+  puts slow_result
+}
+# prints 'Waiting for slow result...' and then after 10s 'This took 10s'. Main loop never blocked.
+```
 
 
 Concepts and Architecture
