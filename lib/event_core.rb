@@ -610,14 +610,15 @@ module EventCore
       select_sources_by_ios = {}
       read_ios = []
       write_ios = []
-      timeout = 0
+      timeout = nil
 
       @monitor.synchronize {
         @sources.delete_if do |source|
           if source.closed?
             true
           else
-            ready_sources << source if source.ready?
+            source_ready = source.ready?
+            ready_sources << source if source_ready
 
             io = source.select_io
             unless io.nil? || io.closed?
@@ -633,8 +634,9 @@ module EventCore
               select_sources_by_ios[io] = source
             end
 
-            dt = source.timeout
-            timeout = dt.nil? ? 0 : (dt < timeout ? dt : timeout)
+            dt = source_ready ? 0 : source.timeout
+            timeout = timeout.nil? ?
+                dt : (dt.nil? ? timeout : (timeout < dt ? timeout : dt))
 
             false
           end

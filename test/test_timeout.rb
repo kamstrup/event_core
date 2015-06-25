@@ -42,7 +42,7 @@ class TestTimeout < Test::Unit::TestCase
     @loop.add_source(t)
     @loop.run
 
-    assert 1 < t.nchecks and t.nchecks < 6
+    assert 1 <= t.nchecks and t.nchecks < 6
   end
 
   # Asserts that an idle source added from inside a slow timeout trigger is called
