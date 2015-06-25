@@ -517,8 +517,10 @@ module EventCore
           begin
             result = block.call
           ensure
-            add_once { thread.join }
-            task.done(result)
+            add_once {
+              task.done(result)
+              thread.join
+            }
           end
         }
       end
