@@ -466,6 +466,7 @@ module EventCore
     end
 
     # Schedule a block of code to be run inside a Ruby Fiber.
+    # Must be called from the same thread as the main loop itself.
     # If the block calls loop.yield without any argument the fiber
     # will simply be resumed repeatedly in subsequent iterations of
     # the loop, until it terminates.
