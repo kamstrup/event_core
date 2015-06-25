@@ -218,6 +218,7 @@ module EventCore
         # If yielding, maybe spawn an async sub-task?
         if @fiber.alive?
           if task.is_a? Proc
+            raise "Fibers on the main loop must take exactly 1 argument. Proc takes #{task.arity}" unless task.arity == 1
             @ready = false # don't fire again until task is done
             loop.add_once {
               fiber_task = FiberTask.new(self)
@@ -499,6 +500,7 @@ module EventCore
     # If an argument is passed to task.done then this will become the return value
     # of the yield.
     def yield(&block)
+      raise "Blocks passed to loop.yield must have arity 1" unless block.nil? or block.arity == 1
       Fiber.yield block
     end
 
