@@ -218,6 +218,7 @@ module EventCore
         # If yielding, maybe spawn an async sub-task?
         if @fiber.alive?
           if task.is_a? Proc
+            raise "Fibers on the main loop must take exactly 1 argument. Proc takes #{task.arity}" unless task.arity == 1
             @ready = false # don't fire again until task is done
             loop.add_once {
               fiber_task = FiberTask.new(self)
@@ -491,8 +492,36 @@ module EventCore
       add_source(source)
     end
 
+    # Must only be called from inside a fiber added with loop.add_fiber.
+    # Without arguments simply passes control back to the mainloop and resumes
+    # execution in next mainloop iteration. If passed a block, the block must
+    # take exactly one argument, which is a FiberTask. The block will be
+    # executed and the fiber scheduled for resumption when task.done is called.
+    # If an argument is passed to task.done then this will become the return value
+    # of the yield.
     def yield(&block)
+      raise "Blocks passed to loop.yield must have arity 1" unless block.nil? or block.arity == 1
       Fiber.yield block
+    end
+
+    # Must only be called from inside a fiber added with loop.add_fiber.
+    # Convenience function on top of loop.yield, returning the result of a block
+    # run in a new thread. Unlike loop.yield the block must not take any arguments;
+    # it is simply the raw result from the block that is send back to the yielding fiber.
+    def yield_from_thread(&block)
+      raise 'A block must be provided' if block.nil?
+      raise "Block must take exactly 0 arguments: #{block.arity}" unless block.arity == 0
+
+      self.yield do |task|
+        thread = Thread.new {
+          begin
+            result = block.call
+          ensure
+            add_once { thread.join }
+            task.done(result)
+          end
+        }
+      end
     end
 
     # Add a callback to invoke when the loop is quitting, before it becomes invalid.
