@@ -93,4 +93,28 @@ class TestThread < Test::Unit::TestCase
     end
   end
 
+  # Asserts that fibers can be created from other threads.
+  def test_off_thread_creation
+    counter = 0
+    @loop.add_once {
+      Thread.new {
+        @loop.add_fiber {
+          counter += 3
+          @loop.yield
+          counter += 5
+          counter += @loop.yield { |task| task.done(7) }
+          counter += @loop.yield_from_thread {
+            sleep 0.1
+            @loop.add_once(0.2) { @loop.quit }
+            11
+          }
+        }
+      }
+    }
+
+    @loop.run
+
+    assert_equal 26, counter
+  end
+
 end

@@ -200,39 +200,14 @@ module EventCore
   # See MainLoop.add_fiber for details.
   class FiberSource < Source
 
-    def initialize(loop, proc)
+    def initialize(loop, proc=nil)
       super()
       raise "First arg must be a MainLoop: #{loop}" unless loop.is_a? MainLoop
-      raise "Second arg must be a Proc: #{proc.class}" unless proc.is_a? Proc
+      raise "Second arg must be a Proc: #{proc.class}" unless (proc.is_a? Proc or proc.nil?)
 
       @loop = loop
-      @fiber = Fiber.new do
-        proc.call
-      end
 
-      @ready = true
-
-      trigger { |async_task_data|
-        task = @fiber.resume(async_task_data)
-
-        # If yielding, maybe spawn an async sub-task?
-        if @fiber.alive?
-          if task.is_a? Proc
-            raise "Fibers on the main loop must take exactly 1 argument. Proc takes #{task.arity}" unless task.arity == 1
-            @ready = false # don't fire again until task is done
-            loop.add_once {
-              fiber_task = FiberTask.new(self)
-              task.call(fiber_task)
-            }
-          elsif task.nil?
-            # all good, just yielding until next loop iteration
-          else
-            raise "Fibers that yield must return nil or a Proc: #{task.class}"
-          end
-        end
-
-        next @fiber.alive?
-      }
+      create_fiber(proc) if proc
     end
 
     def ready!(event_data=nil)
@@ -249,6 +224,39 @@ module EventCore
     def close!
       super
       @fiber = nil
+    end
+
+    def create_fiber(proc)
+      raise "Arg must be a Proc: #{proc.class}" unless proc.is_a? Proc
+      raise "Fiber already created for this source" if @fiber
+
+      @fiber = Fiber.new { proc.call }
+
+      @ready = true
+
+      trigger { |async_task_data|
+        task = @fiber.resume(async_task_data)
+
+        # If yielding, maybe spawn an async sub-task?
+        if @fiber.alive?
+          if task.is_a? Proc
+            raise "Fibers on the main loop must take exactly 1 argument. Proc takes #{task.arity}" unless task.arity == 1
+            @ready = false # don't fire again until task is done
+            @loop.add_once {
+              fiber_task = FiberTask.new(self)
+              task.call(fiber_task)
+            }
+          elsif task.nil?
+            # all good, just yielding until next loop iteration
+          else
+            raise "Fibers that yield must return nil or a Proc: #{task.class}"
+          end
+        end
+
+        next @fiber.alive?
+      }
+
+      nil
     end
   end
 
@@ -466,7 +474,6 @@ module EventCore
     end
 
     # Schedule a block of code to be run inside a Ruby Fiber.
-    # Must be called from the same thread as the main loop itself.
     # If the block calls loop.yield without any argument the fiber
     # will simply be resumed repeatedly in subsequent iterations of
     # the loop, until it terminates.
@@ -488,9 +495,24 @@ module EventCore
     #     puts slow_result
     #   }
     #
+    # Note: You can call this method from any thread. Since Ruby Fibers must
+    # be created from the same thread that runs them, EventCore will ensure
+    # the the fiber is created on the same thread as the main loop is running.
     def add_fiber(&block)
-      source = FiberSource.new(self, block)
-      add_source(source)
+      # Fibers must be created on the same thread that resumes them.
+      # So if we're not on the main loop thread we get on it before
+      # creating the fiber
+      if Thread.current == @thread
+        source = FiberSource.new(self, block)
+        add_source(source)
+      else
+        source = FiberSource.new(self)
+        add_once {
+          source.create_fiber(block)
+          add_source(source)
+        }
+        source
+      end
     end
 
     # Must only be called from inside a fiber added with loop.add_fiber.
